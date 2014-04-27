@@ -17,6 +17,8 @@ void clienterror(int fd, char *cause, char *errnum,
 		 char *shortmsg, char *longmsg);
 void compile_request(char * request, char *host_header, char* path, 
 	char *remaining_headers);
+
+
 int main(int argc, char **argv) 
 {
     int listenfd, connfd, port, clientlen;
@@ -48,10 +50,10 @@ void doit(int fd)
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char hostname[MAXLINE], path[MAXLINE], port[MAXLINE];
     char host_header[MAXLINE], remaining_headers[MAXLINE];
-    char response[MAXLINE], request[MAXLINE], server_buf[MAXLINE];
+    char request[MAXLINE], server_buf[MAXLINE];
     rio_t rio;
-    rio_t server_rio;
-  
+    
+  	
     /* Read request line and headers */
     Rio_readinitb(&rio, fd);
     Rio_readlineb(&rio, buf, MAXLINE);
@@ -62,7 +64,6 @@ void doit(int fd)
         return;
     }
     read_requesthdrs(&rio, host_header, remaining_headers);
-
     /* Parse URI from GET request */
    	if (parse_uri(uri, hostname, path, port) < 0) {
    		//ERROR
@@ -70,16 +71,19 @@ void doit(int fd)
    	if (strncmp(host_header, "Host: ", strlen("Host: ")) != 0){
    		sprintf(host_header, "Host: %s\r\n", hostname);
    	}
-
+   	// printf("%s %s %s\n", hostname, path, port);
    	compile_request(request, host_header, path, remaining_headers);
     int port_num = atoi(port);
 
     int server_fd = Open_clientfd(hostname, port_num);
     Rio_writen(server_fd, request, strlen(request));
-    while (Rio_readnb(&server_rio, server_buf, MAXLINE)){
-    	sprintf(response, "%s%s", response, server_buf);
+    Rio_readinitb(&rio, server_fd);
+    int len;
+    while ((len = Rio_readnb(&rio, server_buf, MAXLINE)) != 0){
+    	Rio_writen(fd, server_buf, len);
+    	Signal(SIGPIPE, SIG_IGN);
     }
-    Rio_writen(fd, response, strlen(response));
+    
     Close(server_fd);
     
 
@@ -87,7 +91,7 @@ void doit(int fd)
     
 }
 
-void compile_request(char * request, char *host_header, char* path, 
+void compile_request(char *request, char *host_header, char* path, 
 	char *remaining_headers){
 	sprintf(request, "GET %s HTTP/1.0\r\n", path);
 	sprintf(request, "%s%s", request, host_header);
@@ -163,7 +167,7 @@ int parse_uri(char *uri, char *hostname, char *path, char *port)
     		port[k] = '\0';
     	}
     	else {
-    		port = "80\0";
+    		strcpy(port, "80\0");
     	}
     	int n = 0;
     	while (uri[i] != '\0'){
