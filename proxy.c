@@ -48,7 +48,7 @@ void doit(int fd)
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char hostname[MAXLINE], path[MAXLINE], port[MAXLINE];
     char host_header[MAXLINE], remaining_headers[MAXLINE];
-    char buf_server[MAXLINE], request[MAXLINE];
+    char response[MAXLINE], request[MAXLINE], server_buf[MAXLINE];
     rio_t rio;
     rio_t server_rio;
   
@@ -76,9 +76,10 @@ void doit(int fd)
 
     int server_fd = Open_clientfd(hostname, port_num);
     Rio_writen(server_fd, request, strlen(request));
-    Rio_readinitb(&server_rio, server_fd);
-    Rio_readlineb(&server_rio, buf_server, MAXLINE);
-    
+    while (Rio_readnb(&server_rio, server_buf, MAXLINE)){
+    	sprintf(response, "%s%s", response, server_buf);
+    }
+    Rio_writen(fd, response, strlen(response));
     Close(server_fd);
     
 
@@ -105,12 +106,13 @@ void compile_request(char * request, char *host_header, char* path,
 /*
  * read_requesthdrs - read and parse HTTP request headers
  */
-/* $begin read_requesthdrs */
+
 void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers) 
 {
     char buf[MAXLINE];
     Rio_readlineb(rp, buf, MAXLINE);
     while(strcmp(buf, "\r\n")) {
+    	Rio_readlineb(rp, buf, MAXLINE);
 		if (strncmp(buf, "Host: ", strlen("Host: ")) == 0){
 			strcpy(host_header, buf);
 		}
@@ -123,11 +125,11 @@ void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers)
 				strlen("Proxy-Connection: ")) != 0)){
 			sprintf(remaining_headers, "%s%s", remaining_headers, buf);
 		}
-		Rio_readlineb(rp, buf, MAXLINE);
+		
     }
     return;
 }
-/* $end read_requesthdrs */
+
 
 /*
  * parse_uri - 
