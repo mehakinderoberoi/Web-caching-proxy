@@ -11,12 +11,12 @@ static const char *accept_hdr = "Accept: text/html,application/xhtml+xml,applica
 static const char *accept_encoding_hdr = "Accept-Encoding: gzip, deflate\r\n";
 
 void doit(int fd);
-void read_requesthdrs(rio_t *rp);
-int parse_uri(char *uri, char *filename, char *cgiargs);
+void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers);
+int parse_uri(char *uri, char *hostname, char *path, char *port);
 void clienterror(int fd, char *cause, char *errnum, 
 		 char *shortmsg, char *longmsg);
-char *compile_request(char *host_header, char* path, char *remaining_headers);
-
+void compile_request(char * request, char *host_header, char* path, 
+	char *remaining_headers);
 int main(int argc, char **argv) 
 {
     int listenfd, connfd, port, clientlen;
@@ -48,7 +48,7 @@ void doit(int fd)
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char hostname[MAXLINE], path[MAXLINE], port[MAXLINE];
     char host_header[MAXLINE], remaining_headers[MAXLINE];
-    char buf_server[MAXLINE];
+    char buf_server[MAXLINE], request[MAXLINE];
     rio_t rio;
     rio_t server_rio;
   
@@ -71,16 +71,14 @@ void doit(int fd)
    		sprintf(host_header, "Host: %s\r\n", hostname);
    	}
 
-   	char *request = compile_request(host_header, path, remaining_headers);
+   	compile_request(request, host_header, path, remaining_headers);
     int port_num = atoi(port);
 
     int server_fd = Open_clientfd(hostname, port_num);
     Rio_writen(server_fd, request, strlen(request));
     Rio_readinitb(&server_rio, server_fd);
     Rio_readlineb(&server_rio, buf_server, MAXLINE);
-    while (Fgets(buf_server, MAXLINE, fd) != NULL){
-    	Rio_readlineb(&server_rio, buf_server, MAXLINE);
-    }
+    
     Close(server_fd);
     
 
@@ -88,8 +86,8 @@ void doit(int fd)
     
 }
 
-char *compile_request(char *host_header, char* path, char *remaining_headers){
-	char request[MAXLINE];
+void compile_request(char * request, char *host_header, char* path, 
+	char *remaining_headers){
 	sprintf(request, "GET %s HTTP/1.0\r\n", path);
 	sprintf(request, "%s%s", request, host_header);
 	sprintf(request, "%s%s", request, user_agent_hdr);
@@ -99,7 +97,7 @@ char *compile_request(char *host_header, char* path, char *remaining_headers){
 	sprintf(request, "%sProxy-Connection: close\r\n", request);
 	sprintf(request, "%s%s", request, remaining_headers);
 	sprintf(request, "%s\r\n", request);
-	return request;
+	return;
 
 }
 
@@ -111,7 +109,6 @@ char *compile_request(char *host_header, char* path, char *remaining_headers){
 void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers) 
 {
     char buf[MAXLINE];
-    int host_request = 0;
     Rio_readlineb(rp, buf, MAXLINE);
     while(strcmp(buf, "\r\n")) {
 		if (strncmp(buf, "Host: ", strlen("Host: ")) == 0){
@@ -139,7 +136,6 @@ void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers)
 
 int parse_uri(char *uri, char *hostname, char *path, char *port) 
 {
-    char *ptr;
     int i = 0;
     char *is_uri = strstr(uri, "http://");
     if (is_uri != NULL){
@@ -206,6 +202,7 @@ void clienterror(int fd, char *cause, char *errnum,
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
     Rio_writen(fd, buf, strlen(buf));
-    Rio_writen(fd, body, strlen
+    Rio_writen(fd, body, strlen(body));
+}
 
 
