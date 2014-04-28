@@ -17,11 +17,12 @@ void clienterror(int fd, char *cause, char *errnum,
 		 char *shortmsg, char *longmsg);
 void compile_request(char * request, char *host_header, char* path, 
 	char *remaining_headers);
+void *doit_thread(void *vargp);
 
 
 int main(int argc, char **argv) 
 {
-    int listenfd, connfd, port, clientlen;
+    int listenfd, port, clientlen;
     struct sockaddr_in clientaddr;
 
     /* Check command line args */
@@ -31,14 +32,24 @@ int main(int argc, char **argv)
     }
     Signal(SIGPIPE, SIG_IGN);
     port = atoi(argv[1]);
+    pthread_t tid;
     
     listenfd = Open_listenfd(port);
     while (1) {
 		clientlen = sizeof(clientaddr);
-		connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *)&clientlen);
-		doit(connfd);
-		Close(connfd);
+		int *connfdp = Malloc(sizeof(int));
+		*connfdp = Accept(listenfd, (SA *)&clientaddr, (socklen_t *)&clientlen);
+		Pthread_create(&tid, NULL, doit_thread, connfdp);
     }
+}
+
+void *doit_thread(void *vargp){
+	int connfd = *((int *)vargp);
+	Pthread_detach(pthread_self());
+	Free(vargp);
+	doit(connfd);
+	Close(connfd);
+	return NULL;
 }
 
 
@@ -104,8 +115,6 @@ void doit(int fd)
     Close(server_fd);
     return;
     
-
-
     
 }
 
