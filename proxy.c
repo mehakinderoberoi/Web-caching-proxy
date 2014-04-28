@@ -29,8 +29,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		exit(1);
     }
+    Signal(SIGPIPE, SIG_IGN);
     port = atoi(argv[1]);
-
+    
     listenfd = Open_listenfd(port);
     while (1) {
 		clientlen = sizeof(clientaddr);
@@ -52,6 +53,18 @@ void doit(int fd)
     char host_header[MAXLINE], remaining_headers[MAXLINE];
     char request[MAXLINE], server_buf[MAXLINE];
     rio_t rio;
+    rio_t server_rio;
+    memset(buf, 0, MAXLINE);
+    memset(method, 0, MAXLINE);
+    memset(uri, 0, MAXLINE);
+    memset(version, 0, MAXLINE);
+    memset(hostname, 0, MAXLINE);
+    memset(path, 0, MAXLINE);
+    memset(port, 0, MAXLINE);
+    memset(host_header, 0, MAXLINE);
+    memset(remaining_headers, 0, MAXLINE);
+    memset(request, 0, MAXLINE);
+    memset(server_buf, 0, MAXLINE);
     
   	
     /* Read request line and headers */
@@ -66,7 +79,7 @@ void doit(int fd)
     read_requesthdrs(&rio, host_header, remaining_headers);
     /* Parse URI from GET request */
    	if (parse_uri(uri, hostname, path, port) < 0) {
-   		//ERROR
+   		return;
    	}
    	if (strncmp(host_header, "Host: ", strlen("Host: ")) != 0){
    		sprintf(host_header, "Host: %s\r\n", hostname);
@@ -76,15 +89,20 @@ void doit(int fd)
     int port_num = atoi(port);
 
     int server_fd = Open_clientfd(hostname, port_num);
-    Rio_writen(server_fd, request, strlen(request));
-    Rio_readinitb(&rio, server_fd);
+    if (rio_writen(server_fd, request, strlen(request)) < 0){
+    	return;
+    }
+    
+    Rio_readinitb(&server_rio, server_fd);
     int len;
-    while ((len = Rio_readnb(&rio, server_buf, MAXLINE)) != 0){
-    	Rio_writen(fd, server_buf, len);
-    	Signal(SIGPIPE, SIG_IGN);
+    while ((len = Rio_readnb(&server_rio, server_buf, MAXLINE)) > 0){
+    	if (rio_writen(fd, server_buf, len) < 0){
+    		return;
+    	}
     }
     
     Close(server_fd);
+    return;
     
 
 
@@ -102,6 +120,7 @@ void compile_request(char *request, char *host_header, char* path,
 	sprintf(request, "%sProxy-Connection: close\r\n", request);
 	sprintf(request, "%s%s", request, remaining_headers);
 	sprintf(request, "%s\r\n", request);
+
 	return;
 
 }
