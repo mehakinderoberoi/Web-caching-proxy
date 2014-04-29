@@ -289,14 +289,15 @@ void *doit_thread(void *vargp){
 
 
 /*
- * doit - the doit function firstly initializes all buffers to 0
- * and then proceeds to read and write. From where, there are two
- * cases that arise. If we've visited a page before, it is cached,
- * and hence we don't open a connection to the server, and simply
- * write the data to the client. If, however, it's not cached, then
- * we open a new connection to the server, write the request to
- * the server, get the response and then write the response to the
- * client.
+ * doit -  The doit function handles the requests of the client.
+ * It first reads the request from the client and then checks whether
+ * the request has been cached in the proxy server's cache. If so, 
+ * the data associated with the request is written to the client without
+ * opening a connection with the server. Otherwise, a connection to the 
+ * server is opened, a request to be sent to the server is compiled, 
+ * the request is written to the server, the server's response is read,
+ * and this response is then written to the client. Also this response 
+ * is cached in the proxy server's cache. 
  */
 
 void doit(int fd)
@@ -418,7 +419,13 @@ void doit(int fd)
 }
 
 /*
- * compile_request - this compiles all the requests and gets its constituents
+ * compile_request - this function compiles the request to be sent to
+ * the server according to the format given in the handout. A GET 
+ * request is compiled with the relevant path, host header and 
+ * remaining headers that were received from the client. In addition, 
+ * some other request headers that are always sent to the server (as
+ * mentioned in the handout) are also added to the request. The compiled
+ * request is stored in the "request" argument.
  */
 
 void compile_request(char *request, char *host_header, char* path,
@@ -437,7 +444,11 @@ void compile_request(char *request, char *host_header, char* path,
 
 
 /*
- * read_requesthdrs - read and parse HTTP request headers
+ * read_requesthdrs - this function parses the request received
+ * from the client and stores the host header in host_header if there
+ * was a host header recevied. It ignores the request headers
+ * mentioned in the handout and stores the remaining headers in the
+ * argument "remaining_headers".
  */
 
 void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers)
@@ -465,11 +476,11 @@ void read_requesthdrs(rio_t *rp, char *host_header, char *remaining_headers)
 
 
 /*
- * parse_uri - When an end user enters a URL, the HTTP request
- * is rather long, and not the request we seek. Thus,
- * this function parses the uri to only contain the
- * hostname and the path or query and everyhting following it.
- *
+ * parse_uri - this function parses the uri received from the client
+ * request and stores the hostname provided in "hostname" argument,
+ * the path provided in the "path" argument and if there is a port
+ * provided it stores that in the "port" argument otherwise it stores  
+ * the default port (80) in the "port" argument. 
  */
 
 int parse_uri(char *uri, char *hostname, char *path, char *port)
@@ -489,10 +500,9 @@ int parse_uri(char *uri, char *hostname, char *path, char *port)
       j += 1;
       i += 1;
     }
-    //end it
     hostname[j] = '\0';
     int k = 0;
-    //to get the port
+    //if there's a port, store it
     if (uri[i] == ':'){
       i += 1;
       while (uri[i] != '/'){
@@ -502,7 +512,7 @@ int parse_uri(char *uri, char *hostname, char *path, char *port)
       }
       port[k] = '\0';
     }
-    //port 80 since it's a web request
+    //otherwise default to 80
     else {
       strcpy(port, "80\0");
     }
