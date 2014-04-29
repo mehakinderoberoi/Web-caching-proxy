@@ -1,3 +1,10 @@
+/*
+ * proxy.c
+ * dsgoel - Druhin Sagar Goel
+ * abist - Aditya Bist
+ * 
+ */
+
 #include <stdio.h>
 #include "csapp.h"
 
@@ -19,10 +26,38 @@ void compile_request(char * request, char *host_header, char* path,
 	char *remaining_headers);
 void *doit_thread(void *vargp);
 
-/* Locking */
-pthread_rwlock_t lock;
 
-/* Cache data structures */
+/*
+ * The cache structure is that of a doubly-linked list which is made up
+ * of cache nodes (cache_node). Each cache_node stores the following 
+ * information:
+ * url -> this acts as the tag into the cache, we search for cached data based
+ * on the url with which the data is associated
+ * data -> this stores the data associated with the url 
+ * data_size -> this stores the size of the data (in bytes)
+ * next -> this is a pointer to the next cache_node in the cache linked list
+ * prev -> this is a pointer to the previous cache_node in the cache linked 
+ * list
+ * The cache structure holds the following information:
+ * cache_size -> keeps track of the size of the total amount of data stored
+ * in the cache
+ * start -> this is a pointer to the start of the cache linked list
+ * end -> this is a pointer to the end of the cache linked list
+ *
+ * The LRU - policy is implemented in the following way:
+ * Any new data added to the cache (that is any new cache_node) is added
+ * to the start of the linked list. Whenever there is a hit, that particular
+ * node is moved to the start of the list. This ensures that the most recently
+ * used node is at the start of the linked list while the least recently used
+ * node is at the end of the linked list. Thus, any node that is deleted from  
+ * the cache is deleted from the end of the linked list.
+ *
+ * The reason behind the choice for implementing the cache as a doubly linked
+ * list was that it allows for consant time addition to the list as well as 
+ * constant time deletion from the list.  
+ */
+
+ /* Cache data structures */
 
 struct cache_node{
 	char *url;
@@ -42,7 +77,11 @@ struct cache{
 
 typedef struct cache cache;
 
-cache *proxy_cache;
+/* Global variables */
+
+cache *proxy_cache; //cache to be used by the proxy
+pthread_rwlock_t lock; //used for thread-locking
+
 
 /* Cache functions */
 
@@ -53,25 +92,36 @@ void add_to_cache(cache *c_cache, char *query, char *q_data,
 void delete_from_cache(cache *c_cache);
 cache *initialize_cache();
 
-
+/*
+ * initialize_cache - this function allocates space for the
+ * cache. It does what its name suggests, initializes a cache
+ * which can be used by the proxy. 
+ */
 cache *initialize_cache(){
 	cache *proxy_cache = Calloc(1, sizeof(cache));
-	proxy_cache->start = NULL;
-	proxy_cache->end = NULL;
-	proxy_cache->cache_size = 0;
+	proxy_cache->start = NULL; //initially there is no start
+	proxy_cache->end = NULL; //initially there is no end
+	proxy_cache->cache_size = 0; //initially there is no data in the cache
 	return proxy_cache;
 }
 
+/*
+ * fix_linking - this function basically the cache_node p
+ * from wherever it is in the cache linked list, to the front 
+ * of the list to indicate that it has been most recently used
+ */
 void fix_linking(cache_node *p, cache *c_cache){
 	if (p->prev != NULL){
-		if (p->next == NULL){
+		if (p->next == NULL){ //p is at the end of the cache
+            //so we update end of the cache
 			p->prev->next = NULL;
 			c_cache->end = p->prev;
 		}
-		else {
+		else { //p is somewhere in the middle of the cache
 			p->prev->next = p->next;
 			p->next->prev = p->prev;
 		}
+        //moving p to the front of the cache
 		p->next = c_cache->start;
 		c_cache->start->prev = p;
 		p->prev = NULL;
@@ -79,26 +129,44 @@ void fix_linking(cache_node *p, cache *c_cache){
 	}
 }
 
+/*
+ * check_for_hit - this function checks whether the data associated
+ * with the url query has been cached in our cache. If so, 
+ * then it returns the cache node which has the data in question
+ * and moves that node to the front of the cache
+ * Otherwise it returns NULL
+ */
 cache_node *check_for_hit(cache *c_cache, char *query){
+    //we don't want other threads accessing the cache while we might be
+    //changing the order of nodes in the cache
 	pthread_rwlock_wrlock(&lock);
-	printf("%s:%s\n", "Checking for hit in cache", query);
 	cache_node *p = c_cache->start;
 	while (p != NULL){
 		if (strcmp(p->url, query) == 0){
-			printf("Hit! : %s\n", p->url);
 			fix_linking(p, c_cache);
 			break;
 		}
 		p = p->next;
 	}
-	// pthread_rwlock_unlock(&lock);
 	return p;
 }
 
-void add_to_cache(cache *c_cache, char *query, char *q_data, unsigned int q_size){
+
+/*
+ * add_to_cache - this function creates a new cache node with the given 
+ * information: query as the url, q_data as the data associated with that
+ * url and q_size as the size of q_data in bytes
+ * the newly created node is added to the front of the cache 
+ */
+void add_to_cache(cache *c_cache, char *query, char *q_data, 
+    unsigned int q_size)
+{
 	if (!(q_size > MAX_OBJECT_SIZE)){
+        //we only add a web obect to the cache if its size is less than
+        //the max object size allowed
+        //again, we don't want other threads accessing the cache while we 
+        //are writing to it
 		pthread_rwlock_wrlock(&lock);
-		printf("%s:%s\n", "Adding to cache", query);
 		cache_node *to_add = Calloc(1, sizeof(cache_node));
 		to_add->url = Calloc(strlen(query) + 1, sizeof(char));
 		strcpy(to_add->url, query);
@@ -106,39 +174,57 @@ void add_to_cache(cache *c_cache, char *query, char *q_data, unsigned int q_size
 		memcpy(to_add->data, q_data, q_size);
 		to_add->data_size = q_size;
 		if (c_cache->start == NULL){
+            //the cache is empty, so we set both start and end
+            //to the newly created cache_node
 			to_add->prev = NULL;
 			to_add->next = NULL;
 			c_cache->start = to_add;
 			c_cache->end = to_add;
 		}
-		else {
+		else { //the cache has at least one node
+            //so we just add the newly created node to the front
+            //of the cache
 			to_add->prev = NULL;
 			to_add->next = c_cache->start;
 			c_cache->start->prev = to_add;
 			c_cache->start = to_add;
 		}
+        //update the cache size to include the size of the newly cached data
 		c_cache->cache_size += q_size;
+        //if the addition of the new data caused us to exceed the maximum cache
+        //size allowed, we keep deleting nodes from the end of the cache till
+        //it is within the required size bounds
 		while (c_cache->cache_size > MAX_CACHE_SIZE){
 			delete_from_cache(c_cache);
 		}
+        //we're done writing to the cache, so we can now allow other threads 
+        //to access it
 		pthread_rwlock_unlock(&lock);
 	}
 }
 
+/*
+ * delete_from_cache - this function deletes the last node from the cache
+ * (that is the end node), since this will always be the least recently 
+ * used node.
+ */
 void delete_from_cache(cache *c_cache){
-	if (c_cache->end != NULL){
-		printf("%s\n", "Deleting from cache");
-		// pthread_rwlock_wrlock(&lock);
+	if (c_cache->end != NULL){ //can't delete from an empty cache!
 		c_cache->cache_size -= c_cache->end->data_size;
+        //since we're removing the end node, we update the size of
+        //the cache to exclude the size of the data stored in the 
+        //end node
 		if (c_cache->end->prev != NULL){
 			c_cache->end->prev->next = NULL;
 		}
 		cache_node *temp = c_cache->end;
+        //sine we allocate memory for url, data and the node itself, 
+        //we have to free them 
 		Free(temp->url);
 		Free(temp->data);
+        //update the end of the cache 
 		c_cache->end = c_cache->end->prev;
 		Free(temp);
-		// pthread_rwlock_unlock(&lock);
 	}
 	
 	
@@ -158,6 +244,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		exit(1);
     }
+    //handling the SIGPIPE signal
     Signal(SIGPIPE, SIG_IGN);
     pthread_rwlock_init(&lock, 0);
     port = atoi(argv[1]);
@@ -172,6 +259,11 @@ int main(int argc, char **argv)
     }
 }
 
+/*
+ * doit_thread - this is the concurrent version of doit, written in the same
+ * manner as explained in the lecture notes
+ */
+
 void *doit_thread(void *vargp){
 	int connfd = *((int *)vargp);
 	Pthread_detach(pthread_self());
@@ -183,7 +275,7 @@ void *doit_thread(void *vargp){
 
 
 /*
- * doit - handle one HTTP request/response transaction
+ * doit - 
  */
 
 void doit(int fd) 
@@ -194,6 +286,7 @@ void doit(int fd)
     char request[MAXLINE], server_buf[MAXLINE];
     rio_t rio;
     rio_t server_rio;
+    //initialize all the buffers to 0
     memset(buf, 0, MAXLINE);
     memset(method, 0, MAXLINE);
     memset(uri, 0, MAXLINE);
@@ -207,64 +300,97 @@ void doit(int fd)
     memset(server_buf, 0, MAXLINE);
     
   	
-    /* Read request line and headers */
+    //read the first line of the request to ensure that the
+    //request is a GET request
     Rio_readinitb(&rio, fd);
     Rio_readlineb(&rio, buf, MAXLINE);
     sscanf(buf, "%s %s %s", method, uri, version);
     if (strcasecmp(method, "GET")) { 
        clienterror(fd, method, "501", "Not Implemented",
-                "Tiny does not implement this method");
+                "Proxy does not implement this method");
         return;
     }
-
+    //we first check if the given request has been cached 
     cache_node *cache_hit = check_for_hit(proxy_cache, uri);
     if (cache_hit != NULL){
+        //we found it in the cache, so we simply write the associated
+        //data to the client
     	if(rio_writen(fd, cache_hit->data, cache_hit->data_size) < 0){
+            //since we've returned from check_for_hit, it is safe for
+            //other threads to access the cache
    		    pthread_rwlock_unlock(&lock);
+            //however, since the write failed, we return and effectively 
+            //close the connection with the client
     		return;
     	}
     }
+    //since we've returned from check_for_hit, it is safe for
+    //other threads to access the cache
 	pthread_rwlock_unlock(&lock);
 
+    /* the data we're looking for hasn't been cached, so we now need to 
+     * compile a request, connect with the server, write the request to the
+     * server, read a response from the server, write that response to the
+     * client and store the response in the cache
+     */
     if (cache_hit == NULL) {
+        //this is for storing the response 
     	char *response_data = Malloc(sizeof(char));
+        //keeps track of the size of the response
     	unsigned int data_size = 0;
+        //get the request headers from the request
     	read_requesthdrs(&rio, host_header, remaining_headers);
-    	/* Parse URI from GET request */
+    	//parse the uri to get the hostname, path and port number
    		if (parse_uri(uri, hostname, path, port) < 0) {
    			return;
    		}
+        //if the request didn't have a host header, we make our own
    		if (strncmp(host_header, "Host: ", strlen("Host: ")) != 0){
    			sprintf(host_header, "Host: %s\r\n", hostname);
    		}
-   		// printf("%s %s %s\n", hostname, path, port);
+        //formats the request to be sent to the browser as one string
    		compile_request(request, host_header, path, remaining_headers);
     	int port_num = atoi(port);
 
-    	int server_fd = Open_clientfd_r(hostname, port_num);
+        //open a connection with the server
+    	int server_fd = open_clientfd_r(hostname, port_num);
+    	if (server_fd < 0){
+            //on failing to connect with the server, we effectively close
+            //the connection with the client as well by returning
+    		return;
+    	}
+        //write the request to the server
     	if (rio_writen(server_fd, request, strlen(request)) < 0){
+            //if writing request to the server fails, we close the 
+            //connection with the server and then return which effectively
+            //closes the connection with the client
+            Close(server_fd);
     		return;
     	}
     
     	Rio_readinitb(&server_rio, server_fd);
     	int len;
     	while ((len = rio_readnb(&server_rio, server_buf, MAXLINE)) > 0){
-    		if (len < 0 && errno == ECONNRESET){
-    			Close(server_fd);
-    			return;
-    		}
+            //read the response from the server and then write to the client
     		if (rio_writen(fd, server_buf, len) < 0){
+                //if write to client fails, close connection with server and
+                //return, thereby closing connection with client
+                Close(server_fd);
     			return;
     		}
+            //while we're reading response from the server, we need to keep
+            //storing it in a string so that we can cache it
     		response_data = Realloc(response_data, data_size + len);
     		memcpy(response_data + data_size, server_buf, len);
+            //keep a track of the size of the data needed to be cached
     		data_size += len;
     	}
-
+        //now we have the data associated with request, and so we add it
+        //to the cache
     	add_to_cache(proxy_cache, uri, response_data, data_size);
     
     	Close(server_fd);
-    	Free(response_data);
+    	Free(response_data); //free response data since we allocated it
     	return; 
     } 
 }
@@ -367,7 +493,6 @@ int parse_uri(char *uri, char *hostname, char *path, char *port)
 /*
  * clienterror - returns an error message to the client
  */
-/* $begin clienterror */
 void clienterror(int fd, char *cause, char *errnum, 
 		 char *shortmsg, char *longmsg) 
 {
