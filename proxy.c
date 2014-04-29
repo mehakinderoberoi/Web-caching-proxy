@@ -19,6 +19,134 @@ void compile_request(char * request, char *host_header, char* path,
 	char *remaining_headers);
 void *doit_thread(void *vargp);
 
+/* Locking */
+pthread_rwlock_t lock;
+
+/* Cache data structures */
+
+struct cache_node{
+	char *url;
+	char *data;
+	unsigned int data_size;
+	struct cache_node *prev;
+	struct cache_node *next;
+};
+
+typedef struct cache_node cache_node;
+
+struct cache{
+	unsigned int cache_size;
+	struct cache_node *start;
+	struct cache_node *end;
+};
+
+typedef struct cache cache;
+
+cache *proxy_cache;
+
+/* Cache functions */
+
+void fix_linking(cache_node *p, cache *c_cache);
+cache_node *check_for_hit(cache *c_cache, char *query);
+void add_to_cache(cache *c_cache, char *query, char *q_data, 
+	unsigned int q_size);
+void delete_from_cache(cache *c_cache);
+cache *initialize_cache();
+
+
+cache *initialize_cache(){
+	cache *proxy_cache = Calloc(1, sizeof(cache));
+	proxy_cache->start = NULL;
+	proxy_cache->end = NULL;
+	proxy_cache->cache_size = 0;
+	return proxy_cache;
+}
+
+void fix_linking(cache_node *p, cache *c_cache){
+	if (p->prev != NULL){
+		if (p->next == NULL){
+			p->prev->next = NULL;
+			c_cache->end = p->prev;
+		}
+		else {
+			p->prev->next = p->next;
+			p->next->prev = p->prev;
+		}
+		p->next = c_cache->start;
+		c_cache->start->prev = p;
+		p->prev = NULL;
+		c_cache->start = p;
+	}
+}
+
+cache_node *check_for_hit(cache *c_cache, char *query){
+	pthread_rwlock_wrlock(&lock);
+	printf("%s:%s\n", "Checking for hit in cache", query);
+	cache_node *p = c_cache->start;
+	while (p != NULL){
+		if (strcmp(p->url, query) == 0){
+			printf("Hit! : %s\n", p->url);
+			fix_linking(p, c_cache);
+			break;
+		}
+		p = p->next;
+	}
+	// pthread_rwlock_unlock(&lock);
+	return p;
+}
+
+void add_to_cache(cache *c_cache, char *query, char *q_data, unsigned int q_size){
+	if (!(q_size > MAX_OBJECT_SIZE)){
+		pthread_rwlock_wrlock(&lock);
+		printf("%s:%s\n", "Adding to cache", query);
+		cache_node *to_add = Calloc(1, sizeof(cache_node));
+		to_add->url = Calloc(strlen(query) + 1, sizeof(char));
+		strcpy(to_add->url, query);
+		to_add->data = Malloc(q_size);
+		memcpy(to_add->data, q_data, q_size);
+		to_add->data_size = q_size;
+		if (c_cache->start == NULL){
+			to_add->prev = NULL;
+			to_add->next = NULL;
+			c_cache->start = to_add;
+			c_cache->end = to_add;
+		}
+		else {
+			to_add->prev = NULL;
+			to_add->next = c_cache->start;
+			c_cache->start->prev = to_add;
+			c_cache->start = to_add;
+		}
+		c_cache->cache_size += q_size;
+		while (c_cache->cache_size > MAX_CACHE_SIZE){
+			delete_from_cache(c_cache);
+		}
+		pthread_rwlock_unlock(&lock);
+	}
+}
+
+void delete_from_cache(cache *c_cache){
+	if (c_cache->end != NULL){
+		printf("%s\n", "Deleting from cache");
+		// pthread_rwlock_wrlock(&lock);
+		c_cache->cache_size -= c_cache->end->data_size;
+		if (c_cache->end->prev != NULL){
+			c_cache->end->prev->next = NULL;
+		}
+		cache_node *temp = c_cache->end;
+		Free(temp->url);
+		Free(temp->data);
+		c_cache->end = c_cache->end->prev;
+		Free(temp);
+		// pthread_rwlock_unlock(&lock);
+	}
+	
+	
+	
+}
+
+
+/* Proxy implementation */
 
 int main(int argc, char **argv) 
 {
@@ -31,9 +159,10 @@ int main(int argc, char **argv)
 		exit(1);
     }
     Signal(SIGPIPE, SIG_IGN);
+    pthread_rwlock_init(&lock, 0);
     port = atoi(argv[1]);
     pthread_t tid;
-    
+    proxy_cache = initialize_cache();
     listenfd = Open_listenfd(port);
     while (1) {
 		clientlen = sizeof(clientaddr);
@@ -87,35 +216,57 @@ void doit(int fd)
                 "Tiny does not implement this method");
         return;
     }
-    read_requesthdrs(&rio, host_header, remaining_headers);
-    /* Parse URI from GET request */
-   	if (parse_uri(uri, hostname, path, port) < 0) {
-   		return;
-   	}
-   	if (strncmp(host_header, "Host: ", strlen("Host: ")) != 0){
-   		sprintf(host_header, "Host: %s\r\n", hostname);
-   	}
-   	// printf("%s %s %s\n", hostname, path, port);
-   	compile_request(request, host_header, path, remaining_headers);
-    int port_num = atoi(port);
 
-    int server_fd = Open_clientfd(hostname, port_num);
-    if (rio_writen(server_fd, request, strlen(request)) < 0){
-    	return;
-    }
-    
-    Rio_readinitb(&server_rio, server_fd);
-    int len;
-    while ((len = Rio_readnb(&server_rio, server_buf, MAXLINE)) > 0){
-    	if (rio_writen(fd, server_buf, len) < 0){
+    cache_node *cache_hit = check_for_hit(proxy_cache, uri);
+    if (cache_hit != NULL){
+    	if(rio_writen(fd, cache_hit->data, cache_hit->data_size) < 0){
+   		    pthread_rwlock_unlock(&lock);
     		return;
     	}
     }
+	pthread_rwlock_unlock(&lock);
+
+    if (cache_hit == NULL) {
+    	char *response_data = Malloc(sizeof(char));
+    	unsigned int data_size = 0;
+    	read_requesthdrs(&rio, host_header, remaining_headers);
+    	/* Parse URI from GET request */
+   		if (parse_uri(uri, hostname, path, port) < 0) {
+   			return;
+   		}
+   		if (strncmp(host_header, "Host: ", strlen("Host: ")) != 0){
+   			sprintf(host_header, "Host: %s\r\n", hostname);
+   		}
+   		// printf("%s %s %s\n", hostname, path, port);
+   		compile_request(request, host_header, path, remaining_headers);
+    	int port_num = atoi(port);
+
+    	int server_fd = Open_clientfd_r(hostname, port_num);
+    	if (rio_writen(server_fd, request, strlen(request)) < 0){
+    		return;
+    	}
     
-    Close(server_fd);
-    return;
+    	Rio_readinitb(&server_rio, server_fd);
+    	int len;
+    	while ((len = rio_readnb(&server_rio, server_buf, MAXLINE)) > 0){
+    		if (len < 0 && errno == ECONNRESET){
+    			Close(server_fd);
+    			return;
+    		}
+    		if (rio_writen(fd, server_buf, len) < 0){
+    			return;
+    		}
+    		response_data = Realloc(response_data, data_size + len);
+    		memcpy(response_data + data_size, server_buf, len);
+    		data_size += len;
+    	}
+
+    	add_to_cache(proxy_cache, uri, response_data, data_size);
     
-    
+    	Close(server_fd);
+    	Free(response_data);
+    	return; 
+    } 
 }
 
 void compile_request(char *request, char *host_header, char* path, 
@@ -238,5 +389,7 @@ void clienterror(int fd, char *cause, char *errnum,
     Rio_writen(fd, buf, strlen(buf));
     Rio_writen(fd, body, strlen(body));
 }
+
+
 
 
